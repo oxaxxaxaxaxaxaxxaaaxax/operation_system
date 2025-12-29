@@ -1,0 +1,2 @@
+redis-benchmark -h 127.0.0.1 -p 6380 -a admin --user admin -t set -n 1000 -r 100
+redis-benchmark -h 127.0.0.1 -p 6380 -a admin --user admin -t get -n 1000 -r 100
