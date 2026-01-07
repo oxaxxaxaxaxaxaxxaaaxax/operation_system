@@ -327,7 +327,7 @@ static void handle_resp_command(client_ctx *ctx, resp_command *cmd){
 
         const char *key = cmd->argv[1];
         char *value = NULL;
-        pthread_rwlock_rdlock(&kv_lock);
+        pthread_rwlock_wrlock(&kv_lock);
         int rc = kv_get(key, &value);
         pthread_rwlock_unlock(&kv_lock);
 

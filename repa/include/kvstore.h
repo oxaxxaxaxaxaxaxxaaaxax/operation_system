@@ -3,10 +3,13 @@
 #include <time.h>
 
 #define TABLE_SIZE 1024
+#define MAX_LOAD_FACTOR 0.75
 
 int kv_init(int default_ttl_sec);
 
 void kv_shutdown(void);
+
+int kv_resize(size_t new_size);
 
 int kv_set(const char *key, const char *value);
 

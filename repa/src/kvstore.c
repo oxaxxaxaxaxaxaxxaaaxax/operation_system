@@ -5,7 +5,6 @@
 #include <string.h>
 #include <time.h>
 
-
 typedef struct kv_node {
     char *key;
     char *value;
@@ -16,8 +15,9 @@ typedef struct kv_node {
 static kv_node ** table= NULL;
 static size_t table_size = TABLE_SIZE;
 static int default_ttl = 0;
+static size_t table_items = 0;
 
-static size_t kv_hash(const char *key){
+static size_t kv_hash(const char *key, const size_t table_size){
     unsigned long h = 5381;
     int c;
     while ((c = (unsigned char)*key++)) {
@@ -51,6 +51,7 @@ void kv_shutdown(void){
             node = next;
         }
     }
+    table_items = 0;
     free(table);
     table= NULL;
 }
@@ -73,6 +74,7 @@ int kv_check_and_delete_if_expired(size_t idx, kv_node *prev, kv_node *node){
             table[idx] = node->next;
         }
 
+        table_items--;
         free(node->key);
         free(node->value);
         free(node);
@@ -82,7 +84,33 @@ int kv_check_and_delete_if_expired(size_t idx, kv_node *prev, kv_node *node){
     return 0;
 }
 
-int kv_set(const char *key, const char *value){
+int kv_resize(size_t new_size){
+    LOG_INFO("Resize store");
+    kv_node **new_table = calloc(new_size, sizeof(*new_table));
+    if (new_table == NULL) {
+        return -1;
+    }
+
+    for (size_t i = 0; i < table_size; i++) {
+        kv_node *node = table[i];
+        while (node != NULL) {
+            kv_node *next = node->next;
+
+            size_t new_idx = kv_hash(node->key, new_size);
+            node->next = new_table[new_idx];
+            new_table[new_idx] = node;
+
+            node = next;
+        }
+    }
+
+    free(table);
+    table = new_table;
+    table_size = new_size;
+    return 0;
+}
+
+int kv_set(const char *key,const char *value){
     if (table== NULL){
         return -1;
     }
@@ -90,76 +118,66 @@ int kv_set(const char *key, const char *value){
         return -1;
     }
 
-    size_t idx = kv_hash(key);
+    if (table_items + 1 > table_size * MAX_LOAD_FACTOR) {
+        int res = kv_resize(table_size * 2);
+        if (res != 0) {
+            return -1;
+        }
+    }
+
+    size_t idx = kv_hash(key, table_size);
     kv_node *node = table[idx];
 
-    while (node) {
+    while (node != NULL) {
         if (strcmp(node->key, key) == 0) {
             free(node->value);
+
             size_t len = strlen(value) + 1;
             char *val_buf = malloc(len);
-            if (val_buf == NULL){
+            if (val_buf == NULL) {
                 LOG_ERROR("kv_set failed");
                 return -1;
             }
+
             memcpy(val_buf, value, len);
             node->value = val_buf;
-
-            if (default_ttl > 0) {
-                node->expire_at = time(NULL) + default_ttl;
-            } else {
-                node->expire_at = 0;
-            }
+            node->expire_at = (default_ttl > 0) ? time(NULL) + default_ttl : 0;
             return 0;
         }
         node = node->next;
     }
-    kv_node *new_node = (kv_node*)calloc(1, sizeof(kv_node));
+
+    kv_node *new_node = calloc(1, sizeof(*new_node));
     if (new_node == NULL) {
         LOG_ERROR("kv_set: calloc failed");
         return -1;
     }
+
     size_t len = strlen(key) + 1;
-    char *key_buf = malloc(len * sizeof(char));
-    if (key_buf == NULL){
-        LOG_ERROR("kv_set failed");
-        return -1;
-    }
-    memcpy(key_buf, key, len);
-    new_node->key = key_buf;
-
-    len = strlen(value) + 1;
-    char *value_buf = malloc(len);
-    if (value_buf == NULL){
-        LOG_ERROR("kv_set failed");
-        return -1;
-    }
-    memcpy(value_buf, value, len);
-    new_node->value = value_buf;
-
-    if (new_node->key == NULL || new_node->value == NULL) {
-        LOG_ERROR("kv_set: pointer to null");
-        free(new_node->key);
-        free(new_node->value);
+    new_node->key = malloc(len);
+    if (new_node->key == NULL) {
         free(new_node);
         return -1;
     }
+    memcpy(new_node->key, key, len);
 
-    if (default_ttl > 0) {
-        new_node->expire_at = time(NULL) + default_ttl;
-    } else {
-        new_node->expire_at = 0;
+    len = strlen(value) + 1;
+    new_node->value = malloc(len);
+    if (new_node->value == NULL) {
+        free(new_node->key);
+        free(new_node);
+        return -1;
     }
+    memcpy(new_node->value, value, len);
+
+    new_node->expire_at = (default_ttl > 0) ? time(NULL) + default_ttl : 0;
 
     new_node->next = table[idx];
     table[idx] = new_node;
+
+    table_items++;
     return 0;
 }
-
-
-repa/client/repactl.c repa/include/auth.h repa/include/config.h repa/include/kvstore.h repa/include/logger.h
-repa/include/resp.h repa/include/workqueue.h repa/src/auth.c repa/src/config.c repa/src/kvstore.c
-repa/src/main.c repa/src/resp.c
 
 
 int kv_get(const char *key, char **out_value){
@@ -170,11 +188,11 @@ int kv_get(const char *key, char **out_value){
         return -1;
     }
 
-    size_t idx = kv_hash(key);
+    size_t idx = kv_hash(key, table_size);
     kv_node *node = table[idx];
     kv_node *prev = NULL;
 
-    while (node) {
+    while (node != NULL) {
         if (strcmp(node->key, key) == 0) {
             if (kv_check_and_delete_if_expired(idx, prev, node) == 1) {
                 return 0;
@@ -182,19 +200,19 @@ int kv_get(const char *key, char **out_value){
 
             size_t len = strlen(node->value) + 1;
             char *value_buf = malloc(len);
-            if (value_buf == NULL){
+            if (value_buf == NULL) {
                 LOG_ERROR("kv_get failed");
                 return -1;
             }
-            memcpy(value_buf, node->value, len);
 
+            memcpy(value_buf, node->value, len);
             *out_value = value_buf;
             return 1;
         }
         prev = node;
         node = node->next;
     }
-    return 0; 
+    return 0;
 }
 
 int kv_del(const char *key){
@@ -202,11 +220,11 @@ int kv_del(const char *key){
         return 0;
     }
 
-    size_t idx = kv_hash(key);
+    size_t idx = kv_hash(key, table_size);
     kv_node *node = table[idx];
     kv_node *prev = NULL;
 
-    while (node) {
+    while (node != NULL) {
         if (strcmp(node->key, key) == 0) {
             if (prev!= NULL) {
                 prev->next = node->next;
@@ -218,11 +236,13 @@ int kv_del(const char *key){
             free(node->key);
             free(node->value);
             free(node);
+            table_items--;
             return 1;
         }
         prev = node;
         node = node->next;
     }
+
     return 0;
 }
 
@@ -234,7 +254,7 @@ int kv_expire(const char *key, int timeout){
         return 0;
     }
 
-    size_t idx = kv_hash(key);
+    size_t idx = kv_hash(key, table_size);
     kv_node *node = table[idx];
     kv_node *prev = NULL;
 
@@ -259,7 +279,7 @@ int kv_ttl(const char *key){
         return -2;
     }
 
-    size_t idx = kv_hash(key);
+    size_t idx = kv_hash(key, table_size);
     kv_node *node = table[idx];
     kv_node *prev = NULL;
 
@@ -274,8 +294,11 @@ int kv_ttl(const char *key){
             }
 
             time_t now = time(NULL);
-
-            return now;
+            time_t ttl = node->expire_at - now;
+            if (ttl < 0) {
+                ttl = 0;
+            }
+            return (int)ttl;
         }
         prev = node;
         node = node->next;

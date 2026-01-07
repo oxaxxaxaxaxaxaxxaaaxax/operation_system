@@ -208,7 +208,6 @@ int send_resp_array(int fd, int argc, char **argv){
     return 0;
 }
 
-
 int recv_line(int fd, char *buf, size_t maxlen){
     size_t pos = 0;
     while (pos + 1 < maxlen) {
