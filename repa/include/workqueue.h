@@ -4,10 +4,10 @@
 #include <stdbool.h>
 #include "resp.h"
 
-struct _client;
+struct client_ctx;
 
 typedef struct task {
-    struct _client *client;
+    struct client_ctx *ctx;
     resp_command cmd;
     struct task *next;
 } task;
@@ -32,4 +32,3 @@ int wq_push(work_queue *q, task *t);
 task* wq_pop(work_queue *q);
 
 void wq_shutdown(work_queue *q);
-

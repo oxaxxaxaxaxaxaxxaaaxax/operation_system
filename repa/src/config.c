@@ -129,7 +129,7 @@ static void print_help(void){
     printf("  --help\n");
 }
 
-int config_apply_cli_args(repa_config *cfg,int argc, char **argv,char **out_config_path,int *out_show_help){
+int config_apply_cli_args(repa_config *cfg,int argc, char **argv,const char **out_config_path,int *out_show_help){
     if (out_show_help) *out_show_help = 0;
     if (out_config_path) *out_config_path = NULL;
 

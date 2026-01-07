@@ -24,6 +24,7 @@
 #include <pthread.h>
 
 #define MAX_ACCEPT_LEN 128
+#define INIT_CAPACITY 16
 
 static work_queue queue;
 static pthread_t *workers = NULL;
@@ -45,7 +46,7 @@ static pthread_cond_t  task_done_cv  = PTHREAD_COND_INITIALIZER;
 static long long active_tasks = 0;
 
 
-typedef struct _client {
+typedef struct client_ctx {
     int fd;
 
     bool authenticated;
@@ -53,10 +54,10 @@ typedef struct _client {
     pthread_mutex_t write_mtx;
     _Atomic int refcnt;
 
-    char username[64];
-} _client;
+    char username[AUTH_MAX_USER];
+} client_ctx;
 
-static void client_init(_client *c, int fd)
+static void client_init(client_ctx *c, int fd)
 {
     c->fd = fd;
     c->authenticated = false;
@@ -66,15 +67,15 @@ static void client_init(_client *c, int fd)
     pthread_mutex_init(&c->write_mtx, NULL);
 }
 
-static void client_destroy(_client *c){
+static void client_destroy(client_ctx *c){
     pthread_mutex_destroy(&c->write_mtx);
 }
 
-static inline void client_acquire(_client *c) {
+static inline void client_acquire(client_ctx *c) {
     atomic_fetch_add_explicit(&c->refcnt, 1, memory_order_relaxed);
 }
 
-static void client_release(_client *c) {
+static void client_release(client_ctx *c) {
     if (atomic_fetch_sub_explicit(&c->refcnt, 1, memory_order_acq_rel) == 1) {
         close(c->fd);
         client_destroy(c);
@@ -88,7 +89,7 @@ static void task_cleanup(void *arg) {
         return;
     }
 
-    client_release(t->client);
+    client_release(t->ctx);
     resp_free_command(&t->cmd);
     free(t);
 
@@ -100,7 +101,7 @@ static void task_cleanup(void *arg) {
 
 
 static void client_thread_cleanup(void *arg) {
-    _client *c = arg;
+    client_ctx *c = arg;
 
     pthread_mutex_lock(&clients_mtx);
     active_clients--;
@@ -115,23 +116,23 @@ static void client_thread_cleanup(void *arg) {
 
 
 typedef struct arg_reader {
-    _client *client;
+    client_ctx *ctx;
 } arg_reader;
 
 static void *client_reader_thread(void *arg){
 
     arg_reader *ra = (arg_reader*)arg;
-    _client *client = ra->client;
+    client_ctx *ctx_client = ra->ctx;
     free(ra);
 
-    pthread_cleanup_push(client_thread_cleanup, client);
+    pthread_cleanup_push(client_thread_cleanup, ctx_client);
 
     resp_buffer rbuf;
     resp_buffer_init(&rbuf);
 
-    while (running && !client->should_close) {
-        char tmp[1024];
-        ssize_t n = read(client->fd, tmp, sizeof(tmp));
+    while (running && !ctx_client->should_close) {
+        char tmp[BUFFER_SIZE];
+        ssize_t n = read(ctx_client->fd, tmp, sizeof(tmp));
         if (n == 0) break;
         if (n == -1) {
             if (errno == EINTR) continue;
@@ -140,43 +141,43 @@ static void *client_reader_thread(void *arg){
 
         int res = resp_buffer_append(&rbuf, tmp, (size_t)n);
         if (res == -1) {
-            pthread_mutex_lock(&client->write_mtx);
-            resp_send_error(client->fd, "ERR input buffer overflow");
-            pthread_mutex_unlock(&client->write_mtx);
+            pthread_mutex_lock(&ctx_client->write_mtx);
+            resp_send_error(ctx_client->fd, "ERR input buffer overflow");
+            pthread_mutex_unlock(&ctx_client->write_mtx);
             break;
         }
 
-        while (!client->should_close) {
+        while (!ctx_client->should_close) {
             resp_command cmd;
             int pr = resp_try_parse_command(&rbuf, &cmd);
             if (pr == 0){
                 break;
             }
             if (pr == -1) {
-                pthread_mutex_lock(&client->write_mtx);
-                resp_send_error(client->fd, "ERR protocol error");
-                pthread_mutex_unlock(&client->write_mtx);
-                client->should_close = true;
+                pthread_mutex_lock(&ctx_client->write_mtx);
+                resp_send_error(ctx_client->fd, "ERR protocol error");
+                pthread_mutex_unlock(&ctx_client->write_mtx);
+                ctx_client->should_close = true;
                 break;
             }
 
             task *t = (task*)calloc(1, sizeof(task));
             if (t == NULL) {
                 resp_free_command(&cmd);
-                pthread_mutex_lock(&client->write_mtx);
-                resp_send_error(client->fd, "ERR no memory");
-                pthread_mutex_unlock(&client->write_mtx);
+                pthread_mutex_lock(&ctx_client->write_mtx);
+                resp_send_error(ctx_client->fd, "ERR no memory");
+                pthread_mutex_unlock(&ctx_client->write_mtx);
                 break;
             }
 
-            client_acquire(client);
-            t->client = client;
+            client_acquire(ctx_client);
+            t->ctx = ctx_client;
             t->cmd = cmd;
 
             res = wq_push(&queue, t);
             if (res < 0) {
                 resp_free_command(&t->cmd);
-                client_release(client); 
+                client_release(ctx_client); 
                 free(t);
                 break;
             }
@@ -204,11 +205,11 @@ void tolower_command(char *s){
     }
 }
 
-static void handle_resp_command(_client *client, resp_command *cmd){
+static void handle_resp_command(client_ctx *ctx, resp_command *cmd){
     if (cmd->argc < 1) {
-        pthread_mutex_lock(&client->write_mtx);
-        resp_send_error(client->fd, "empty command");
-        pthread_mutex_unlock(&client->write_mtx);
+        pthread_mutex_lock(&ctx->write_mtx);
+        resp_send_error(ctx->fd, "empty command");
+        pthread_mutex_unlock(&ctx->write_mtx);
         return;
     }
 
@@ -221,33 +222,33 @@ static void handle_resp_command(_client *client, resp_command *cmd){
     int is_hello = (strcmp(cmd_type, "hello") == 0) ? 1 : 0;
     int is_quit  = (strcmp(cmd_type, "quit")  == 0) ? 1 : 0;
 
-    if (!client->authenticated && !is_ping && !is_auth && !is_hello && !is_quit) {
+    if (!ctx->authenticated && !is_ping && !is_auth && !is_hello && !is_quit) {
         LOG_ERROR("please, authentoficate");
-        pthread_mutex_lock(&client->write_mtx);
-        resp_send_error(client->fd, "Not authorized");
-        pthread_mutex_unlock(&client->write_mtx);
+        pthread_mutex_lock(&ctx->write_mtx);
+        resp_send_error(ctx->fd, "Not authorized");
+        pthread_mutex_unlock(&ctx->write_mtx);
         return;
     }
 
     if (is_ping) {
-        pthread_mutex_lock(&client->write_mtx);
-        resp_send_simple_string(client->fd, "PONG");
-        pthread_mutex_unlock(&client->write_mtx);
+        pthread_mutex_lock(&ctx->write_mtx);
+        resp_send_simple_string(ctx->fd, "PONG");
+        pthread_mutex_unlock(&ctx->write_mtx);
         return;
     }
 
     if (is_hello) {
-        pthread_mutex_lock(&client->write_mtx);
-        resp_send_simple_string(client->fd, "OK");
-        pthread_mutex_unlock(&client->write_mtx);
+        pthread_mutex_lock(&ctx->write_mtx);
+        resp_send_simple_string(ctx->fd, "OK");
+        pthread_mutex_unlock(&ctx->write_mtx);
         return;
     }
 
     if (is_auth) {
         if (cmd->argc < 3) {
-            pthread_mutex_lock(&client->write_mtx);
-            resp_send_error(client->fd, "wrong number of arguments for 'AUTH'");
-            pthread_mutex_unlock(&client->write_mtx);
+            pthread_mutex_lock(&ctx->write_mtx);
+            resp_send_error(ctx->fd, "wrong number of arguments for 'AUTH'");
+            pthread_mutex_unlock(&ctx->write_mtx);
             return;
         }
 
@@ -256,37 +257,37 @@ static void handle_resp_command(_client *client, resp_command *cmd){
 
         int ok = auth_check(user, pass);
         if (!ok) {
-            pthread_mutex_lock(&client->write_mtx);
-            resp_send_error(client->fd, "invalid username-password pair");
-            pthread_mutex_unlock(&client->write_mtx);
+            pthread_mutex_lock(&ctx->write_mtx);
+            resp_send_error(ctx->fd, "invalid username-password pair");
+            pthread_mutex_unlock(&ctx->write_mtx);
             return;
         }
 
-        client->authenticated = 1;
-        strncpy(client->username, user, sizeof(client->username));
-        client->username[sizeof(client->username) - 1] = '\0';
+        ctx->authenticated = 1;
+        strncpy(ctx->username, user, sizeof(ctx->username));
+        ctx->username[sizeof(ctx->username) - 1] = '\0';
 
-        pthread_mutex_lock(&client->write_mtx);
-        resp_send_simple_string(client->fd, "OK");
-        pthread_mutex_unlock(&client->write_mtx);
+        pthread_mutex_lock(&ctx->write_mtx);
+        resp_send_simple_string(ctx->fd, "OK");
+        pthread_mutex_unlock(&ctx->write_mtx);
         return;
     }
 
     if (is_quit) {
-        pthread_mutex_lock(&client->write_mtx);
-        resp_send_simple_string(client->fd, "OK");
-        pthread_mutex_unlock(&client->write_mtx);
-        client->should_close = true;
-        shutdown(client->fd, SHUT_RDWR);
+        pthread_mutex_lock(&ctx->write_mtx);
+        resp_send_simple_string(ctx->fd, "OK");
+        pthread_mutex_unlock(&ctx->write_mtx);
+        ctx->should_close = true;
+        shutdown(ctx->fd, SHUT_RDWR);
         return;
     }
 
     if (strcmp(cmd_type, "set") == 0) {
 
         if (cmd->argc < 3) {
-            pthread_mutex_lock(&client->write_mtx);
-            resp_send_error(client->fd, "wrong number of arguments for 'SET'");
-            pthread_mutex_unlock(&client->write_mtx);
+            pthread_mutex_lock(&ctx->write_mtx);
+            resp_send_error(ctx->fd, "wrong number of arguments for 'SET'");
+            pthread_mutex_unlock(&ctx->write_mtx);
             return;
         }
 
@@ -303,24 +304,24 @@ static void handle_resp_command(_client *client, resp_command *cmd){
         pthread_rwlock_unlock(&kv_lock);
 
         if (rc != 0) {
-            pthread_mutex_lock(&client->write_mtx);
-            resp_send_error(client->fd, "error in SET command");
-            pthread_mutex_unlock(&client->write_mtx);
+            pthread_mutex_lock(&ctx->write_mtx);
+            resp_send_error(ctx->fd, "error in SET command");
+            pthread_mutex_unlock(&ctx->write_mtx);
             return;
         }
 
-        pthread_mutex_lock(&client->write_mtx);
-        resp_send_simple_string(client->fd, "OK");
-        pthread_mutex_unlock(&client->write_mtx);
+        pthread_mutex_lock(&ctx->write_mtx);
+        resp_send_simple_string(ctx->fd, "OK");
+        pthread_mutex_unlock(&ctx->write_mtx);
         return;
     }
 
     if (strcmp(cmd_type, "get") == 0) {
 
         if (cmd->argc < 2) {
-            pthread_mutex_lock(&client->write_mtx);
-            resp_send_error(client->fd, "wrong number of arguments for 'GET'");
-            pthread_mutex_unlock(&client->write_mtx);
+            pthread_mutex_lock(&ctx->write_mtx);
+            resp_send_error(ctx->fd, "wrong number of arguments for 'GET'");
+            pthread_mutex_unlock(&ctx->write_mtx);
             return;
         }
 
@@ -331,21 +332,21 @@ static void handle_resp_command(_client *client, resp_command *cmd){
         pthread_rwlock_unlock(&kv_lock);
 
         if (rc == -1) {
-            pthread_mutex_lock(&client->write_mtx);
-            resp_send_error(client->fd, "error in GET command");
-            pthread_mutex_unlock(&client->write_mtx);
+            pthread_mutex_lock(&ctx->write_mtx);
+            resp_send_error(ctx->fd, "error in GET command");
+            pthread_mutex_unlock(&ctx->write_mtx);
             return;
         }
 
         if (rc == 0) {
-            pthread_mutex_lock(&client->write_mtx);
-            resp_send_null_bulk(client->fd);
-            pthread_mutex_unlock(&client->write_mtx);
+            pthread_mutex_lock(&ctx->write_mtx);
+            resp_send_null_bulk(ctx->fd);
+            pthread_mutex_unlock(&ctx->write_mtx);
         } 
         if (rc == 1) {
-            pthread_mutex_lock(&client->write_mtx);
-            resp_send_bulk_string(client->fd, value);
-            pthread_mutex_unlock(&client->write_mtx);
+            pthread_mutex_lock(&ctx->write_mtx);
+            resp_send_bulk_string(ctx->fd, value);
+            pthread_mutex_unlock(&ctx->write_mtx);
             free(value);
         }
         return;
@@ -353,9 +354,9 @@ static void handle_resp_command(_client *client, resp_command *cmd){
 
     if (strcmp(cmd_type, "del") == 0) {
         if (cmd->argc < 2) {
-            pthread_mutex_lock(&client->write_mtx);
-            resp_send_error(client->fd, "wrong number of arguments for 'DEL'");
-            pthread_mutex_unlock(&client->write_mtx);
+            pthread_mutex_lock(&ctx->write_mtx);
+            resp_send_error(ctx->fd, "wrong number of arguments for 'DEL'");
+            pthread_mutex_unlock(&ctx->write_mtx);
             return;
         }
 
@@ -363,25 +364,25 @@ static void handle_resp_command(_client *client, resp_command *cmd){
         int deleted = kv_del(cmd->argv[1]);
         pthread_rwlock_unlock(&kv_lock);
 
-        pthread_mutex_lock(&client->write_mtx);
-        resp_send_integer(client->fd, deleted);
-        pthread_mutex_unlock(&client->write_mtx);
+        pthread_mutex_lock(&ctx->write_mtx);
+        resp_send_integer(ctx->fd, deleted);
+        pthread_mutex_unlock(&ctx->write_mtx);
         return;
     }
 
     if (strcmp(cmd_type, "expire") == 0) {
         if (cmd->argc < 3) {
-            pthread_mutex_lock(&client->write_mtx);
-            resp_send_error(client->fd, "wrong number of arguments for 'EXPIRE'");
-            pthread_mutex_unlock(&client->write_mtx);
+            pthread_mutex_lock(&ctx->write_mtx);
+            resp_send_error(ctx->fd, "wrong number of arguments for 'EXPIRE'");
+            pthread_mutex_unlock(&ctx->write_mtx);
             return;
         }
 
         int timeout = atoi(cmd->argv[2]);
         if (timeout < 0) {
-            pthread_mutex_lock(&client->write_mtx);
-            resp_send_integer(client->fd, 0);
-            pthread_mutex_unlock(&client->write_mtx);
+            pthread_mutex_lock(&ctx->write_mtx);
+            resp_send_integer(ctx->fd, 0);
+            pthread_mutex_unlock(&ctx->write_mtx);
             return;
         }
 
@@ -389,17 +390,17 @@ static void handle_resp_command(_client *client, resp_command *cmd){
         int res = kv_expire(cmd->argv[1], timeout);
         pthread_rwlock_unlock(&kv_lock);
 
-        pthread_mutex_lock(&client->write_mtx);
-        resp_send_integer(client->fd, res);
-        pthread_mutex_unlock(&client->write_mtx);
+        pthread_mutex_lock(&ctx->write_mtx);
+        resp_send_integer(ctx->fd, res);
+        pthread_mutex_unlock(&ctx->write_mtx);
         return;
     }
 
     if (strcmp(cmd_type, "ttl") == 0) {
         if (cmd->argc < 2) {
-            pthread_mutex_lock(&client->write_mtx);
-            resp_send_error(client->fd, "wrong number of arguments for 'TTL'");
-            pthread_mutex_unlock(&client->write_mtx);
+            pthread_mutex_lock(&ctx->write_mtx);
+            resp_send_error(ctx->fd, "wrong number of arguments for 'TTL'");
+            pthread_mutex_unlock(&ctx->write_mtx);
             return;
         }
 
@@ -407,14 +408,14 @@ static void handle_resp_command(_client *client, resp_command *cmd){
         int ttl = kv_ttl(cmd->argv[1]);
         pthread_rwlock_unlock(&kv_lock);
 
-        pthread_mutex_lock(&client->write_mtx);
-        resp_send_integer(client->fd, ttl);
-        pthread_mutex_unlock(&client->write_mtx);
+        pthread_mutex_lock(&ctx->write_mtx);
+        resp_send_integer(ctx->fd, ttl);
+        pthread_mutex_unlock(&ctx->write_mtx);
         return;
     }
-    pthread_mutex_lock(&client->write_mtx);
-    resp_send_error(client->fd, "unknown command");
-    pthread_mutex_unlock(&client->write_mtx);
+    pthread_mutex_lock(&ctx->write_mtx);
+    resp_send_error(ctx->fd, "unknown command");
+    pthread_mutex_unlock(&ctx->write_mtx);
 }
 
 static void *worker_thread(void *arg){
@@ -430,9 +431,9 @@ static void *worker_thread(void *arg){
 
         pthread_cleanup_push(task_cleanup, t);
 
-        _client *client = t->client;
+        client_ctx *ctx_client = t->ctx;
 
-        handle_resp_command(client, &t->cmd);
+        handle_resp_command(ctx_client, &t->cmd);
 
         pthread_cleanup_pop(1);
 
@@ -452,11 +453,10 @@ void create_signal_handler(){
 }
 
 
-
 int main(int argc, char **argv){
     repa_config cfg;
     config_set_defaults(&cfg);
-    char *config_path = (char*)"repa.conf";
+    const char *config_path = "repa.conf";
 
     int show_help = 0;
     int cli_res = config_apply_cli_args(&cfg, argc, argv, &config_path, &show_help);
@@ -508,9 +508,7 @@ int main(int argc, char **argv){
     }
     workers = calloc((size_t)workers_count, sizeof(pthread_t));
     if (workers == NULL) {
-        wq_destroy(&queue);
-        kv_shutdown();
-        logger_shutdown();
+        goto cleanup;
         return 1;
     }
 
@@ -524,9 +522,7 @@ int main(int argc, char **argv){
             } 
             free(workers);
             workers = NULL;
-            wq_destroy(&queue);
-            kv_shutdown();
-            logger_shutdown();
+            goto cleanup;
             return 1;
         }
     }
@@ -547,10 +543,7 @@ int main(int argc, char **argv){
             free(workers);
             workers = NULL;
         }
-        wq_destroy(&queue);
-
-        logger_shutdown();
-        kv_shutdown();
+        goto cleanup;
         return 1;
     }
 
@@ -569,10 +562,7 @@ int main(int argc, char **argv){
             free(workers);
             workers = NULL;
         }
-        wq_destroy(&queue);
-
-        logger_shutdown();
-        kv_shutdown();
+        goto cleanup;
         
         return 1;
     }
@@ -597,10 +587,7 @@ int main(int argc, char **argv){
             free(workers);
             workers = NULL;
         }
-        wq_destroy(&queue);
-
-        logger_shutdown();
-        kv_shutdown();
+        goto cleanup;
         return 1;
     }
 
@@ -617,17 +604,11 @@ int main(int argc, char **argv){
             free(workers);
             workers = NULL;
         }
-        wq_destroy(&queue);
-
-        logger_shutdown();
-        kv_shutdown();
+        goto cleanup;
         return 1;
     }
 
     LOG_INFO("Repa is now listening for TCP connections");
-
-
-
 
     while (running) {
         struct sockaddr_in client_addr;
@@ -646,9 +627,9 @@ int main(int argc, char **argv){
 
         LOG_INFO("Accepted new connection");
 
-        _client *c = (_client*)calloc(1, sizeof(_client));
+        client_ctx *c = (client_ctx*)calloc(1, sizeof(client_ctx));
         if (c == NULL) {
-            LOG_ERROR("no memory for client");
+            LOG_ERROR("no memory for ctx_client");
             close(client_fd);
             continue;
         }
@@ -663,7 +644,7 @@ int main(int argc, char **argv){
             free(c);
             continue;
         }
-        ra->client = c;
+        ra->ctx = c;
 
         pthread_t read_th;
         int res = pthread_create(&read_th, NULL, client_reader_thread, ra);
@@ -680,7 +661,7 @@ int main(int argc, char **argv){
         if (client_threads_count == client_threads_cap) {
             int new_cap =0;
             if (client_threads_cap == 0){
-                new_cap = 16;
+                new_cap = INIT_CAPACITY ;
             }else{
                 new_cap  = client_threads_cap * 2;
             }
@@ -791,16 +772,16 @@ int main(int argc, char **argv){
         free(workers);
         workers = NULL;
     }
-    wq_destroy(&queue);  
     
-    kv_shutdown();
     LOG_INFO("All threads have finished");
     LOG_INFO("Repa finished");
+    goto cleanup;
 
-    logger_shutdown();
-
+    cleanup:
+        wq_destroy(&queue);
+        logger_shutdown();
+        kv_shutdown();
     
 
     return 0;
-
 }   

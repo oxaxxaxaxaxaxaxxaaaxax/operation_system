@@ -26,5 +26,5 @@ void config_set_defaults(repa_config *cfg);
 
 int config_load_file(repa_config *cfg, const char *path);
 
-int config_apply_cli_args(repa_config *cfg,int argc, char **argv,char **out_config_path,int *out_show_help);
-
+int config_apply_cli_args(repa_config *cfg,int argc, char **argv, 
+    const char **out_config_path,int *out_show_help);

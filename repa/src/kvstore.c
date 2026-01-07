@@ -9,15 +9,12 @@
 typedef struct kv_node {
     char *key;
     char *value;
-
-    //0 - бессрочно
     time_t expire_at;
-    //список для коллизий
     struct kv_node *next;
 } kv_node;
 
 static kv_node ** table= NULL;
-static size_t table_size = 1024;
+static size_t table_size = TABLE_SIZE;
 static int default_ttl = 0;
 
 static size_t kv_hash(const char *key){
@@ -45,13 +42,13 @@ void kv_shutdown(void){
     }
 
     for (size_t i = 0; i < table_size; ++i) {
-        kv_node *e = table[i];
-        while (e != NULL) {
-            kv_node *next = e->next;
-            free(e->key);
-            free(e->value);
-            free(e);
-            e = next;
+        kv_node *node = table[i];
+        while (node != NULL) {
+            kv_node *next = node->next;
+            free(node->key);
+            free(node->value);
+            free(node);
+            node = next;
         }
     }
     free(table);
@@ -59,26 +56,26 @@ void kv_shutdown(void){
 }
 
 
-int kv_check_and_delete_if_expired(size_t idx, kv_node *prev, kv_node *e){
-    if (e== NULL) {
+int kv_check_and_delete_if_expired(size_t idx, kv_node *prev, kv_node *node){
+    if (node== NULL) {
         return 0;
     }
-    if (e->expire_at == 0) {
+    if (node->expire_at == 0) {
         return 0; 
     }
 
     time_t now = time(NULL);
-    if (now >= e->expire_at) {
+    if (now >= node->expire_at) {
         if (prev!= NULL){
-            prev->next = e->next;
+            prev->next = node->next;
         } 
         else{
-            table[idx] = e->next;
+            table[idx] = node->next;
         }
 
-        free(e->key);
-        free(e->value);
-        free(e);
+        free(node->key);
+        free(node->value);
+        free(node);
         return 1;
     }
 
@@ -94,70 +91,76 @@ int kv_set(const char *key, const char *value){
     }
 
     size_t idx = kv_hash(key);
-    kv_node *e = table[idx];
+    kv_node *node = table[idx];
 
-    while (e) {
-        if (strcmp(e->key, key) == 0) {
-            free(e->value);
+    while (node) {
+        if (strcmp(node->key, key) == 0) {
+            free(node->value);
             size_t len = strlen(value) + 1;
-            char *p = malloc(len);
-            if (p == NULL){
+            char *val_buf = malloc(len);
+            if (val_buf == NULL){
                 LOG_ERROR("kv_set failed");
                 return -1;
             }
-            memcpy(p, value, len);
-            e->value = p;
+            memcpy(val_buf, value, len);
+            node->value = val_buf;
 
             if (default_ttl > 0) {
-                e->expire_at = time(NULL) + default_ttl;
+                node->expire_at = time(NULL) + default_ttl;
             } else {
-                e->expire_at = 0;
+                node->expire_at = 0;
             }
             return 0;
         }
-        e = e->next;
+        node = node->next;
     }
-    kv_node *new_e = (kv_node*)calloc(1, sizeof(kv_node));
-    if (new_e == NULL) {
+    kv_node *new_node = (kv_node*)calloc(1, sizeof(kv_node));
+    if (new_node == NULL) {
         LOG_ERROR("kv_set: calloc failed");
         return -1;
     }
-    size_t len1 = strlen(key) + 1;
-    char *p1 = malloc(len1 * sizeof(char));
-    if (p1 == NULL){
+    size_t len = strlen(key) + 1;
+    char *key_buf = malloc(len * sizeof(char));
+    if (key_buf == NULL){
         LOG_ERROR("kv_set failed");
         return -1;
     }
-    memcpy(p1, key, len1);
-    new_e->key = p1;
+    memcpy(key_buf, key, len);
+    new_node->key = key_buf;
 
-    size_t len2 = strlen(value) + 1;
-    char *p2 = malloc(len2);
-    if (p2 == NULL){
+    len = strlen(value) + 1;
+    char *value_buf = malloc(len);
+    if (value_buf == NULL){
         LOG_ERROR("kv_set failed");
         return -1;
     }
-    memcpy(p2, value, len2);
-    new_e->value = p2;
+    memcpy(value_buf, value, len);
+    new_node->value = value_buf;
 
-    if (new_e->key == NULL || new_e->value == NULL) {
+    if (new_node->key == NULL || new_node->value == NULL) {
         LOG_ERROR("kv_set: pointer to null");
-        free(new_e->key);
-        free(new_e->value);
-        free(new_e);
+        free(new_node->key);
+        free(new_node->value);
+        free(new_node);
         return -1;
     }
 
     if (default_ttl > 0) {
-        new_e->expire_at = time(NULL) + default_ttl;
+        new_node->expire_at = time(NULL) + default_ttl;
     } else {
-        new_e->expire_at = 0;
+        new_node->expire_at = 0;
     }
 
-    new_e->next = table[idx];
-    table[idx] = new_e;
+    new_node->next = table[idx];
+    table[idx] = new_node;
     return 0;
 }
+
+
+repa/client/repactl.c repa/include/auth.h repa/include/config.h repa/include/kvstore.h repa/include/logger.h
+repa/include/resp.h repa/include/workqueue.h repa/src/auth.c repa/src/config.c repa/src/kvstore.c
+repa/src/main.c repa/src/resp.c
+
 
 int kv_get(const char *key, char **out_value){
     if (table== NULL){
@@ -168,28 +171,28 @@ int kv_get(const char *key, char **out_value){
     }
 
     size_t idx = kv_hash(key);
-    kv_node *e = table[idx];
+    kv_node *node = table[idx];
     kv_node *prev = NULL;
 
-    while (e) {
-        if (strcmp(e->key, key) == 0) {
-            if (kv_check_and_delete_if_expired(idx, prev, e) == 1) {
+    while (node) {
+        if (strcmp(node->key, key) == 0) {
+            if (kv_check_and_delete_if_expired(idx, prev, node) == 1) {
                 return 0;
             }
 
-            size_t len = strlen(e->value) + 1;
-            char *p = malloc(len);
-            if (p == NULL){
+            size_t len = strlen(node->value) + 1;
+            char *value_buf = malloc(len);
+            if (value_buf == NULL){
                 LOG_ERROR("kv_get failed");
                 return -1;
             }
-            memcpy(p, e->value, len);
+            memcpy(value_buf, node->value, len);
 
-            *out_value = p;
+            *out_value = value_buf;
             return 1;
         }
-        prev = e;
-        e = e->next;
+        prev = node;
+        node = node->next;
     }
     return 0; 
 }
@@ -200,25 +203,25 @@ int kv_del(const char *key){
     }
 
     size_t idx = kv_hash(key);
-    kv_node *e = table[idx];
+    kv_node *node = table[idx];
     kv_node *prev = NULL;
 
-    while (e) {
-        if (strcmp(e->key, key) == 0) {
+    while (node) {
+        if (strcmp(node->key, key) == 0) {
             if (prev!= NULL) {
-                prev->next = e->next;
+                prev->next = node->next;
             }
             else {
-                table[idx] = e->next;
+                table[idx] = node->next;
             }
 
-            free(e->key);
-            free(e->value);
-            free(e);
+            free(node->key);
+            free(node->value);
+            free(node);
             return 1;
         }
-        prev = e;
-        e = e->next;
+        prev = node;
+        node = node->next;
     }
     return 0;
 }
@@ -232,20 +235,20 @@ int kv_expire(const char *key, int timeout){
     }
 
     size_t idx = kv_hash(key);
-    kv_node *e = table[idx];
+    kv_node *node = table[idx];
     kv_node *prev = NULL;
 
-    while (e) {
-        if (strcmp(e->key, key) == 0) {
-            if (kv_check_and_delete_if_expired(idx, prev, e) == 1) {
+    while (node) {
+        if (strcmp(node->key, key) == 0) {
+            if (kv_check_and_delete_if_expired(idx, prev, node) == 1) {
                 return 0;
             }
 
-            e->expire_at = time(NULL) + timeout;
+            node->expire_at = time(NULL) + timeout;
             return 1;
         }
-        prev = e;
-        e = e->next;
+        prev = node;
+        node = node->next;
     }
 
     return 0;
@@ -257,16 +260,16 @@ int kv_ttl(const char *key){
     }
 
     size_t idx = kv_hash(key);
-    kv_node *e = table[idx];
+    kv_node *node = table[idx];
     kv_node *prev = NULL;
 
-    while (e) {
-        if (strcmp(e->key, key) == 0) {
-            if (kv_check_and_delete_if_expired(idx, prev, e) == 1) {
+    while (node) {
+        if (strcmp(node->key, key) == 0) {
+            if (kv_check_and_delete_if_expired(idx, prev, node) == 1) {
                 return -2;
             }
 
-            if (e->expire_at == 0) {
+            if (node->expire_at == 0) {
                 return -1; 
             }
 
@@ -274,8 +277,8 @@ int kv_ttl(const char *key){
 
             return now;
         }
-        prev = e;
-        e = e->next;
+        prev = node;
+        node = node->next;
     }
 
     return -2;

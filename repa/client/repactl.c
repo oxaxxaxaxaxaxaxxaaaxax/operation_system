@@ -114,13 +114,12 @@ int connect_to_server(const char *addr, int port){
     char port_str[16];
     snprintf(port_str, sizeof(port_str), "%d", port);
 
-    struct addrinfo hints;
+    struct addrinfo hints = {0};
     struct addrinfo *res = NULL;
     struct addrinfo *rp = NULL;
     int sock = -1;
     int ret;
 
-    memset(&hints, 0, sizeof(hints));
     hints.ai_family = AF_INET;
     hints.ai_socktype = SOCK_STREAM;
     hints.ai_flags = 0;

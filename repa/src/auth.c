@@ -1,12 +1,8 @@
-
-#define AUTH_MAX_USER 64
-#define AUTH_MAX_PASS 64
-
 #include "auth.h"
 #include <string.h>
 
-static char user[64];
-static char password[64];
+static char user[AUTH_MAX_USER];
+static char password[AUTH_MAX_PASS];
 
 
 int auth_init(const char *_user, const char *_pass) {

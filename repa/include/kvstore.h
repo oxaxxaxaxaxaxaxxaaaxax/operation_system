@@ -2,6 +2,7 @@
 
 #include <time.h>
 
+#define TABLE_SIZE 1024
 
 int kv_init(int default_ttl_sec);
 

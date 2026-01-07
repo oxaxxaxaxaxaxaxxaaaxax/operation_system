@@ -22,4 +22,3 @@ void logger_shutdown(void);
 void logger_set_level(log_level_t level);
 
 void logger_log(log_level_t level, const char *fmt);
-

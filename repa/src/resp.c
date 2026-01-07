@@ -200,7 +200,7 @@ void resp_free_command(resp_command *cmd){
 }
 
 int resp_send_simple_string(int fd, const char *s){
-    char buf[1024];
+    char buf[BUFFER_SIZE];
     int n = snprintf(buf, sizeof(buf), "+%s\r\n", s);
     if (n < 0) {
         return -1;
@@ -212,7 +212,7 @@ int resp_send_simple_string(int fd, const char *s){
 }
 
 int resp_send_error(int fd, const char *msg){
-    char buf[1024];
+    char buf[BUFFER_SIZE];
     int n = snprintf(buf, sizeof(buf), "-ERR %s\r\n", msg);
     if (n < 0) {
         return -1;
@@ -225,7 +225,7 @@ int resp_send_error(int fd, const char *msg){
 
 int resp_send_bulk_string(int fd, const char *s){
     size_t len = strlen(s);
-    char header[64];
+    char header[HEADER_SIZE];
     int n = snprintf(header, sizeof(header), "$%zu\r\n", len);
     if (n < 0) {
         return -1;
@@ -243,7 +243,7 @@ int resp_send_bulk_string(int fd, const char *s){
 }
 
 int resp_send_integer(int fd, long long value){
-    char buf[64];
+    char buf[VALUE_SIZE];
     int n = snprintf(buf, sizeof(buf), ":%lld\r\n", value);
     if (n < 0){
         return -1;
@@ -263,12 +263,3 @@ int resp_send_null_bulk(int fd){
     }
     return 0;
 }
-
-
-/*
-typedef enum{
-    UT_OK = 0,
-    UT_EINVAL =1,
-    UT_EAGAIN =2,
-    UT_ESRCH =3
-} uthread_err; */
