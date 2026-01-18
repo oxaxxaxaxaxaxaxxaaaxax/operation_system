@@ -1,5 +1,5 @@
 CC      = gcc
-CFLAGS  = -std=gnu11 -Wall -Wextra -Wpedantic -Iinclude 
+CFLAGS  = -std=gnu11 -Wall -Wextra -Wpedantic -Iinclude -Icommon
 LDFLAGS = -pthread
 CFLAGS_DEBUG  = -O0 -g -fsanitize=address -fno-omit-frame-pointer
 LDFLAGS_DEBUG = -fsanitize=address

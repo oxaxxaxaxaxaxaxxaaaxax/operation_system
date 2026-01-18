@@ -1,27 +1,28 @@
-#include "auth.h"
 #include <string.h>
+#include "auth.h"
+#include "constants.h"
 
-static char user[AUTH_MAX_USER];
-static char password[AUTH_MAX_PASS];
+static char user[REPA_MAX_USER_LEN];
+static char password[REPA_MAX_PASS_LEN];
 
 
-int auth_init(const char *_user, const char *_pass) {
-    if (_user == NULL || _pass == NULL){
+int auth_init(const char *username, const char *pass) {
+    if (username == NULL || pass == NULL){
         return -1;
     }
-    strncpy(user, _user, AUTH_MAX_USER);
-    strncpy(password, _pass, AUTH_MAX_PASS);
+    strncpy(user, username, REPA_MAX_USER_LEN);
+    strncpy(password, pass, REPA_MAX_PASS_LEN);
     return 0;
 }
 
-int auth_check(const char *_user, const char *_pass) {
-    if (_user == NULL || _pass == NULL){
+int auth_check(const char *username, const char *pass) {
+    if (username == NULL || pass == NULL){
         return 0;
     }
-    if (strcmp(_user, user) != 0) {
+    if (strcmp(username, user) != 0) {
         return 0;
     }
-    if (strcmp(_pass, password) != 0) {
+    if (strcmp(pass, password) != 0) {
         return 0;
     }
     return 1;

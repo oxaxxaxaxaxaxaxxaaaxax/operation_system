@@ -1,0 +1,10 @@
+#pragma once
+
+#define REPA_DEFAULT_ADDR "127.0.0.1"
+#define REPA_DEFAULT_PORT 6380
+#define REPA_MAX_RESP_LINE 1024
+#define REPA_MAX_CMD_ARGS 32
+#define REPA_ADDR_LEN 256
+#define REPA_MIN_PORT 1025
+#define REPA_MAX_PORT 65535
+#define REPA_PORT_SIZE 8

@@ -12,13 +12,13 @@
 #include <sys/socket.h>
 #include <netdb.h>
 #include <termios.h>
-
-#define MAX_STRING_LEN 1024*1024
+#include "constants.h"
+#include "client_constants.h"
 
 typedef struct {
-    char addr[256];
+    char addr[REPA_ADDR_LEN];
     int  port;
-    char user[64];
+    char user[REPA_MAX_USER_LEN];
     bool user_specified;
 } options;
 
@@ -58,8 +58,8 @@ int read_password(char *buf, size_t size){
 
 void options_init(options *opt){
     memset(opt, 0, sizeof(*opt));
-    strncpy(opt->addr, "127.0.0.1", sizeof(opt->addr));
-    opt->port = 6380;
+    strncpy(opt->addr, REPA_DEFAULT_ADDR, sizeof(opt->addr));
+    opt->port = REPA_DEFAULT_PORT;
     opt->user_specified = false;
 }
 
@@ -85,7 +85,7 @@ int parse_args(options *opt, int argc, char **argv){
                 return -1;
             }
             opt->port = atoi(argv[i+1]);
-            if (opt->port <= 1024 || opt->port > 65535) {
+            if (opt->port < REPA_MIN_PORT || opt->port > REPA_MAX_PORT) {
                 fprintf(stderr, "Invalid port: %s\n", argv[i+1]);
                 return -1;
             }
@@ -111,7 +111,7 @@ int parse_args(options *opt, int argc, char **argv){
 }
 
 int connect_to_server(const char *addr, int port){
-    char port_str[16];
+    char port_str[REPA_PORT_SIZE];
     snprintf(port_str, sizeof(port_str), "%d", port);
 
     struct addrinfo hints = {0};
@@ -245,7 +245,7 @@ int recv_line(int fd, char *buf, size_t maxlen){
 }
 
 int read_and_print_resp(int fd){
-    char line[1024];
+    char line[REPA_MAX_RESP_LINE];
     int r = recv_line(fd, line, sizeof(line));
     if (r <= 0) {
         if (r == 0) {
@@ -273,7 +273,7 @@ int read_and_print_resp(int fd){
             printf("(error) %s\n", payload);
             break;
 
-        case ':': 
+        case ':':
             printf("(integer) %s\n", payload);
             break;
 
@@ -283,7 +283,7 @@ int read_and_print_resp(int fd){
                 printf("(nil)\n");
                 return 0;
             }
-            if (len < 0 || len > MAX_STRING_LEN) {
+            if (len < 0 || len > REPA_MAX_STRING_LEN) {
                 return -1;
             }
             char *buf = (char*)malloc((size_t)len + 1);
@@ -341,7 +341,7 @@ int split_line(char *line, char **argv, int max_args){
 
         while (*p != '\0' && !isspace((unsigned char)*p)){
             p++;
-        } 
+        }
         if (*p == '\0') {
             argc++;
             break;
@@ -379,7 +379,7 @@ int main(int argc, char **argv){
         }
     }
 
-    char password[128];
+    char password[REPA_MAX_PASS_LEN];
     if (read_password(password, sizeof(password)) != 0) {
         return 1;
     }
@@ -408,7 +408,7 @@ int main(int argc, char **argv){
         return 1;
     }
 
-    char line[1024];
+    char line[REPA_MAX_RESP_LINE];
     while (1) {
         printf("repa> ");
         fflush(stdout);
@@ -435,8 +435,8 @@ int main(int argc, char **argv){
             break;
         }
 
-        char *cmd_argv[32];
-        int cmd_argc = split_line(line, cmd_argv, 32);
+        char *cmd_argv[REPA_MAX_CMD_ARGS];
+        int cmd_argc = split_line(line, cmd_argv, REPA_MAX_CMD_ARGS);
         if (cmd_argc <= 0) {
             continue;
         }

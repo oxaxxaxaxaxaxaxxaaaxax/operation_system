@@ -2,10 +2,9 @@
 
 #include <stddef.h>
 #include "logger.h"
+#include "constants.h"
 
 #define REPA_MAX_PATH_LEN 256
-#define REPA_MAX_USER_LEN 64
-#define REPA_MAX_PASS_LEN 64
 
 typedef struct {
     int port;
@@ -26,5 +25,5 @@ void config_set_defaults(repa_config *cfg);
 
 int config_load_file(repa_config *cfg, const char *path);
 
-int config_apply_cli_args(repa_config *cfg,int argc, char **argv, 
+int config_apply_cli_args(repa_config *cfg,int argc, char **argv,
     const char **out_config_path,int *out_show_help);

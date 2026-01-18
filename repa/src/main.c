@@ -19,6 +19,7 @@
 #include "kvstore.h"
 #include "auth.h"
 #include "workqueue.h"
+#include "constants.h"
 
 #include <stdbool.h>
 #include <pthread.h>
@@ -54,7 +55,7 @@ typedef struct client_ctx {
     pthread_mutex_t write_mtx;
     _Atomic int refcnt;
 
-    char username[AUTH_MAX_USER];
+    char username[REPA_MAX_USER_LEN];
 } client_ctx;
 
 static void client_init(client_ctx *c, int fd)
@@ -157,7 +158,7 @@ static void *client_reader_thread(void *arg){
                 pthread_mutex_lock(&ctx_client->write_mtx);
                 resp_send_error(ctx_client->fd, "ERR protocol error");
                 pthread_mutex_unlock(&ctx_client->write_mtx);
-                ctx_client->should_close = true;
+                rbuf.len = 0;
                 break;
             }
 
@@ -177,7 +178,7 @@ static void *client_reader_thread(void *arg){
             res = wq_push(&queue, t);
             if (res < 0) {
                 resp_free_command(&t->cmd);
-                client_release(ctx_client); 
+                client_release(ctx_client);
                 free(t);
                 break;
             }
@@ -342,7 +343,7 @@ static void handle_resp_command(client_ctx *ctx, resp_command *cmd){
             pthread_mutex_lock(&ctx->write_mtx);
             resp_send_null_bulk(ctx->fd);
             pthread_mutex_unlock(&ctx->write_mtx);
-        } 
+        }
         if (rc == 1) {
             pthread_mutex_lock(&ctx->write_mtx);
             resp_send_bulk_string(ctx->fd, value);
@@ -423,7 +424,7 @@ static void *worker_thread(void *arg){
 
     while(1) {
         task *t = wq_pop(&queue);
-        if (t==NULL) break; 
+        if (t==NULL) break;
 
         pthread_mutex_lock(&tasks_mtx);
         active_tasks++;
@@ -519,7 +520,7 @@ int main(int argc, char **argv){
             wq_shutdown(&queue);
             for (int j = 0; j < i; j++){
                 pthread_join(workers[j], NULL);
-            } 
+            }
             free(workers);
             workers = NULL;
             goto cleanup;
@@ -527,14 +528,14 @@ int main(int argc, char **argv){
         }
     }
 
-    
+
     create_signal_handler();
 
     int listen_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (listen_fd < 0) {
         perror("socket");
         LOG_ERROR("Failed to create socket");
-        
+
         wq_shutdown(&queue);
         if(workers != NULL){
             for (int i = 0; i < workers_count; i++) {
@@ -563,7 +564,7 @@ int main(int argc, char **argv){
             workers = NULL;
         }
         goto cleanup;
-        
+
         return 1;
     }
 
@@ -723,7 +724,7 @@ int main(int argc, char **argv){
     pthread_mutex_lock(&clients_mtx);
     if (active_clients != 0){
         need_cancel = 1;
-    } 
+    }
     pthread_mutex_unlock(&clients_mtx);
 
     if (need_cancel) {
@@ -772,7 +773,7 @@ int main(int argc, char **argv){
         free(workers);
         workers = NULL;
     }
-    
+
     LOG_INFO("All threads have finished");
     LOG_INFO("Repa finished");
     goto cleanup;
@@ -781,7 +782,7 @@ int main(int argc, char **argv){
         wq_destroy(&queue);
         logger_shutdown();
         kv_shutdown();
-    
+
 
     return 0;
-}   
+}

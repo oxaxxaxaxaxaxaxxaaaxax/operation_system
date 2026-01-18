@@ -1,5 +1,5 @@
 CC      = gcc
-CFLAGS  = -std=c11 -Wall -Wextra -pedantic
+CFLAGS  = -std=c11 -Wall -Wextra -pedantic -I../common
 
 TARGET  = repactl
 SRCS    = repactl.c
