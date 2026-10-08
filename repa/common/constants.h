@@ -1,0 +1,5 @@
+#pragma once
+
+#define REPA_MAX_USER_LEN 64
+#define REPA_MAX_PASS_LEN 128
+#define REPA_MAX_STRING_LEN 1024 * 1024
